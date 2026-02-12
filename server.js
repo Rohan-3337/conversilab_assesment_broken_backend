@@ -8,14 +8,13 @@ const { generateToken } = require("./utils/tokenGenerator");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Session storage (in-memory)
 const loginSessions = {};
 const otpStore = {};
 
 // Middleware
+app.use(cookieParser()); 
 app.use(requestLogger);
 app.use(express.json());
-
 
 app.get("/", (req, res) => {
   res.json({
@@ -25,7 +24,6 @@ app.get("/", (req, res) => {
   });
 });
 
-// CHANGE 1: /auth/login endpoint
 app.post("/auth/login", (req, res) => {
   try {
     const { email, password } = req.body;
@@ -34,22 +32,19 @@ app.post("/auth/login", (req, res) => {
       return res.status(400).json({ error: "Email and password required" });
     }
 
-    // Generate session and OTP
     const loginSessionId = Math.random().toString(36).substring(7);
-    const otp = Math.floor(100000 + Math.random() * 900000); // 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000); 
 
-    // Store session with 2-minute expiry
     loginSessions[loginSessionId] = {
       email,
       password,
       createdAt: Date.now(),
-      expiresAt: Date.now() + 2 * 60 * 1000, // 2 minutes
+      expiresAt: Date.now() + 2 * 60 * 1000,
     };
 
-    // Store OTP
     otpStore[loginSessionId] = otp;
 
-    console.log(`[OTP] Session ${loginSessionId} generated`);
+    console.log(`[OTP] Session ${loginSessionId} OTP: ${otp}`); 
 
     return res.status(200).json({
       message: "OTP sent",
@@ -83,14 +78,14 @@ app.post("/auth/verify-otp", (req, res) => {
       return res.status(401).json({ error: "Session expired" });
     }
 
-    if (parseInt(otp) !== otpStore[loginSessionId]) {
+    if (otp.toString() !== otpStore[loginSessionId].toString()) {
       return res.status(401).json({ error: "Invalid OTP" });
     }
 
     res.cookie("session_token", loginSessionId, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 15 * 60 * 1000, // 15 minutes
+      secure: false, 
+      maxAge: 15 * 60 * 1000, 
     });
 
     delete otpStore[loginSessionId];
@@ -109,27 +104,36 @@ app.post("/auth/verify-otp", (req, res) => {
 
 app.post("/auth/token", (req, res) => {
   try {
-    const token = req.headers.authorization;
+    let sessionId = null;
+    
+    if (req.cookies && req.cookies.session_token) {
+      sessionId = req.cookies.session_token;
+    } 
+    else {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        sessionId = authHeader.substring(7);
+      }
+    }
 
-    if (!token) {
+    if (!sessionId) {
       return res
         .status(401)
         .json({ error: "Unauthorized - valid session required" });
     }
 
-    const session = loginSessions[token.replace("Bearer ", "")];
+    const session = loginSessions[sessionId];
 
     if (!session) {
       return res.status(401).json({ error: "Invalid session" });
     }
 
-    // Generate JWT
     const secret = process.env.JWT_SECRET || "default-secret-key";
 
     const accessToken = jwt.sign(
       {
         email: session.email,
-        sessionId: token,
+        sessionId: sessionId,
       },
       secret,
       {
@@ -139,7 +143,9 @@ app.post("/auth/token", (req, res) => {
 
     return res.status(200).json({
       access_token: accessToken,
+      token_type: "Bearer",
       expires_in: 900,
+      session_id:sessionId
     });
   } catch (error) {
     return res.status(500).json({
@@ -149,7 +155,6 @@ app.post("/auth/token", (req, res) => {
   }
 });
 
-// Protected route example
 app.get("/protected", authMiddleware, (req, res) => {
   return res.json({
     message: "Access granted",
